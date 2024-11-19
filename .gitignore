@@ -1,0 +1,4 @@
+.venv/
+x-ray-classification.h5
+.env
+uploads/

@@ -1,0 +1,8 @@
+Flask
+numpy
+tensorflow
+matplotlib
+fpdf
+python-dotenv
+google-generativeai
+Werkzeug
