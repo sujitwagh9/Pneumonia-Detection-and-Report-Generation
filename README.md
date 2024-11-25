@@ -33,18 +33,22 @@ You can download the model by following the above drive link!
 
 #### Step 1: Clone Repository
 
-`git clone https://github.com/sujitwagh9/x-rayAnalysis.git`
+```
+git clone https://github.com/sujitwagh9/x-rayAnalysis.git
 
-`cd xrayAnalysis`
+cd xrayAnalysis
+```
 
 #### Step 2: Set up the virtual environment
 
-`python -m venv venv`
+```
+python -m venv venv
 
-`source venv/bin/activate #for linux/mac`
+source venv/bin/activate #for linux/mac
 
-`venv\Scripts\activate #for windows`     
+venv\Scripts\activate #for windows   
 
+```
 #### Step 3: Install the dependencies
 
 `pip install -r requirements.txt`
