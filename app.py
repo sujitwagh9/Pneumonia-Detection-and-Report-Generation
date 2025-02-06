@@ -23,10 +23,48 @@ model = tf.keras.models.load_model('x-ray-classification.h5')
 # Configure Gemini API with API Key from environment
 genai.configure(api_key=os.environ['API_KEY'])
 
+class GradCAM:
+    def __init__(self, model, class_idx):
+        self.model = model
+        self.class_idx = class_idx
+        self.last_conv_layer = self._find_last_conv_layer()
+
+    def _find_last_conv_layer(self):
+        for layer in reversed(self.model.layers):
+            if 'conv' in layer.name.lower():
+                return layer.name
+        raise ValueError("Could not find a convolutional layer")
+
+    def compute_heatmap(self, img_array):
+        grad_model = tf.keras.models.Model(
+            [self.model.inputs],
+            [self.model.get_layer(self.last_conv_layer).output, self.model.output]
+        )
+
+        with tf.GradientTape() as tape:
+            conv_output, predictions = grad_model(img_array)
+            loss = predictions[:, self.class_idx]
+
+        grads = tape.gradient(loss, conv_output)
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        
+        conv_output = conv_output[0]
+        heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_output), axis=-1)
+        heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
+        
+        return heatmap.numpy()
+
 def create_pdf_report(prediction, grad_cam_path, detailed_report):
-    pdf = FPDF()
+    from fpdf import FPDF
+    
+    class PDF(FPDF):
+        def __init__(self):
+            super().__init__()
+            self.add_font('DejaVu', '', 'DejaVuSansCondensed.ttf', uni=True)
+    
+    pdf = PDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
+    pdf.set_font("DejaVu", size=12)
 
     pdf.cell(200, 10, txt="Pneumonia Diagnosis Report", ln=True, align='C')
     pdf.cell(200, 10, txt=f"Diagnosis: {'Pneumonia Detected' if prediction > 0.5 else 'No Pneumonia'}", ln=True)
@@ -40,12 +78,16 @@ def create_pdf_report(prediction, grad_cam_path, detailed_report):
         pdf.cell(200, 10, txt="Grad-CAM Visualization:", ln=True)
         pdf.image(grad_cam_path, x=10, y=None, w=190)
 
-    pdf.cell(200, 10, txt="Detailed Diagnosis Report via Gemini API:", ln=True)
+    pdf.cell(200, 10, txt="Detailed Diagnosis Report:", ln=True)
+    
+    # Clean and encode the detailed report
+    detailed_report = detailed_report.encode('ascii', 'replace').decode('ascii')
     pdf.multi_cell(0, 10, detailed_report)
 
     pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], "diagnosis_report.pdf")
     pdf.output(pdf_path)
     return pdf_path
+
 
 
 def generate_detailed_report(prediction, additional_info):
@@ -77,6 +119,48 @@ def generate_detailed_report(prediction, additional_info):
         # Return error message if there's an issue
         return f"Error generating report: {str(e)}"
 
+def generate_grad_cam(model, image_path):
+    # Load and preprocess the image
+    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
+    img_array = tf.keras.preprocessing.image.img_to_array(img) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+    
+    # Get prediction
+    prediction = model.predict(img_array)[0]
+    
+    # Initialize GradCAM with the model and class index (0 for binary classification)
+    grad_cam = GradCAM(model, class_idx=0)
+    
+    # Generate heatmap
+    heatmap = grad_cam.compute_heatmap(img_array)
+    
+    # Load the original image for overlay
+    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
+    img = tf.keras.preprocessing.image.img_to_array(img)
+    
+    # Resize heatmap to match image size
+    heatmap = np.uint8(255 * heatmap)
+    heatmap = tf.image.resize(
+        tf.expand_dims(heatmap, -1),
+        (img.shape[0], img.shape[1])
+    ).numpy()
+    
+    # Apply colormap to heatmap
+    heatmap = np.squeeze(heatmap)
+    colormap = plt.cm.jet(heatmap)[:, :, :3]
+    colormap = np.uint8(255 * colormap)
+    
+    # Overlay heatmap on original image
+    overlay = colormap * 0.4 + img * 0.6
+    overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+    
+    # Save the visualization
+    grad_cam_path = os.path.join(app.config['UPLOAD_FOLDER'], 'grad_cam.png')
+    plt.imsave(grad_cam_path, overlay / 255)
+    plt.close()
+    
+    return grad_cam_path, prediction
+
 # Flask Routes
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -90,20 +174,12 @@ def index():
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
         file.save(file_path)
 
-        # Skipping Grad-CAM generation
-        # grad_cam_path, prediction = generate_grad_cam(model, file_path)
+        # Generate Grad-CAM and get prediction
+        grad_cam_path, prediction = generate_grad_cam(model, file_path)
 
-        # Instead of Grad-CAM, just get prediction
-        img = tf.keras.preprocessing.image.load_img(file_path, target_size=(224, 224))
-        img_array = tf.keras.preprocessing.image.img_to_array(img) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
-        prediction = model.predict(img_array)[0]
-
-        additional_info = "No additional info available for now."
+        additional_info = "Analysis includes Grad-CAM visualization highlighting areas of interest in the X-ray."
         detailed_report = generate_detailed_report(prediction, additional_info)
-
-        # Since no Grad-CAM, you can pass a placeholder or skip the grad_cam_path
-        grad_cam_path = None  # Or set it to an existing image if needed
+        
         pdf_path = create_pdf_report(prediction, grad_cam_path, detailed_report)
 
         return redirect(url_for('download_pdf', filename="diagnosis_report.pdf"))
@@ -117,9 +193,16 @@ def download_pdf(filename):
         return "File not found", 404
     return send_file(file_path, as_attachment=True)
 
+@app.route('/grad-cam/<filename>')
+def grad_cam(filename):
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if not os.path.exists(file_path):
+        return "File not found", 404
+    return send_file(file_path, as_attachment=True)
 
 
 # Run the app
 if __name__ == '__main__':
+
     app.run(debug=True)
 
