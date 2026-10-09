@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Analyzing… · Chest X-Ray Analysis{% endblock %}
+
+{% block content %}
+<div class="processing">
+    <div class="card processing-card rise" role="status" aria-live="polite">
+        <div class="scan" aria-hidden="true">
+            <img src="{{ url_for('run_file', run_id=run_id, kind='original') }}" alt="">
+            <div class="scan-line"></div>
+        </div>
+        <div class="processing-body">
+            <h1>Analyzing your X-ray</h1>
+            <div class="processing-sub">
+                <span id="step-text">{{ labels[state] }}…</span>
+                <span class="mono" id="elapsed">0:00</span>
+            </div>
+            <div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
+            <ol class="stepper">
+                {% for step in steps if step != 'done' %}
+                {% set i = steps.index(step) %}
+                <li data-step="{{ step }}" class="{{ 'is-done' if i < steps.index(state) else 'is-active' if step == state else '' }}">
+                    <span class="mark"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    {{ labels[step] }}
+                </li>
+                {% endfor %}
+            </ol>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const order = {{ steps | tojson }};
+    const labels = {{ labels | tojson }};
+    const statusUrl = {{ url_for('run_status', run_id=run_id) | tojson }};
+    const started = Date.now();
+
+    function render(state) {
+        const current = order.indexOf(state);
+        document.querySelectorAll('[data-step]').forEach(li => {
+            const i = order.indexOf(li.dataset.step);
+            li.classList.toggle('is-done', i < current);
+            li.classList.toggle('is-active', i === current);
+        });
+        // Each finished step fills a share of the bar; the active one shows partial progress
+        document.getElementById('progress-bar').style.width = Math.max(8, ((current + 0.5) / (order.length - 1)) * 100) + '%';
+        if (labels[state]) document.getElementById('step-text').textContent = labels[state] + '…';
+    }
+
+    setInterval(() => {
+        const s = Math.floor((Date.now() - started) / 1000);
+        document.getElementById('elapsed').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    }, 1000);
+
+    async function poll() {
+        try {
+            const response = await fetch(statusUrl, { cache: 'no-store' });
+            if (response.status === 404) { window.location.href = {{ url_for('index') | tojson }}; return; }
+            const status = await response.json();
+            if (status.state === 'done' || status.state === 'error') {
+                document.getElementById('progress-bar').style.width = '100%';
+                window.location.reload();
+                return;
+            }
+            render(status.state);
+        } catch (e) { /* transient network error: keep polling */ }
+        setTimeout(poll, 1000);
+    }
+    render({{ state | tojson }});
+    setTimeout(poll, 1000);
+})();
+</script>
+{% endblock %}

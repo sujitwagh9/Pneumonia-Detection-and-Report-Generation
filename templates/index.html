@@ -1,115 +1,267 @@
-<!DOCTYPE html>
-<html lang="en">
+{% extends "base.html" %}
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chest X-Ray Diagnosis</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Arial', sans-serif;
-            background-color: #f4f7fc;
-            color: #333;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-        }
-
-        .container {
-            background: #fff;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-            max-width: 500px;
-            width: 100%;
-            text-align: center;
-        }
-
-        h1 {
-            font-size: 24px;
-            color: #2c3e50;
-            margin-bottom: 20px;
-            font-weight: 600;
-        }
-
-        label {
-            display: block;
-            font-size: 16px;
-            color: #7f8c8d;
-            margin-bottom: 10px;
-            text-align: left;
-            font-weight: 500;
-        }
-
-        input[type="file"] {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #ccc;
-            border-radius: 5px;
-            background-color: #f8f8f8;
-            font-size: 16px;
-            color: #555;
-            margin-bottom: 20px;
-            transition: all 0.3s ease;
-        }
-
-        input[type="file"]:hover {
-            border-color: #3498db;
-        }
-
-        button {
-            background-color: #3498db;
-            color: white;
-            padding: 12px 20px;
-            border: none;
-            border-radius: 5px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: background-color 0.3s ease;
-            width: 100%;
-        }
-
-        button:hover {
-            background-color: #2980b9;
-        }
-
-        button:active {
-            background-color: #1f5f7a;
-        }
-
-        @media (max-width: 600px) {
-            .container {
-                padding: 20px;
-            }
-
-            h1 {
-                font-size: 20px;
-            }
-
-            input[type="file"],
-            button {
-                font-size: 14px;
-            }
-        }
-    </style>
-</head>
-
-<body>
-    <div class="container">
-        <h1>Chest X-Ray Pneumonia Diagnosis</h1>
-        <form action="/" method="POST" enctype="multipart/form-data">
-            <label for="file">Upload Chest X-Ray Image:</label>
-            <input type="file" name="file" id="file" required>
-            <button type="submit">Submit</button>
-        </form>
+{% block content %}
+<section class="home-hero">
+    <div>
+        <span class="badge rise"><span class="badge-dot" aria-hidden="true"></span>EfficientNetB0 · trained on 5,856 X-rays</span>
+        <h1 class="hero-title">
+            <span class="line"><span style="--i:0">Pneumonia screening,</span></span>
+            <span class="line"><span style="--i:1" class="serif">made visible.</span></span>
+        </h1>
+        <p class="lead rise rise-2">Upload a frontal chest X-ray. Get a pneumonia probability, a heatmap showing
+            exactly where the model looked, and a structured report you can share as a PDF.</p>
+        <dl class="hero-stats rise rise-3">
+            <div><dt>Time to result</dt><dd>~30<small>sec</small></dd></div>
+            <div><dt>Explainability</dt><dd>Grad-CAM</dd></div>
+            <div><dt>Auto-deleted</dt><dd>{{ retention_minutes }}<small>min</small></dd></div>
+        </dl>
     </div>
-</body>
 
-</html>
+    <div class="card upload-card rise rise-2" id="upload-card">
+        {% if model_error %}
+        <div class="alert alert-warning" role="alert">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            <span><strong>Model not installed.</strong> {{ model_error }}</span>
+        </div>
+        {% endif %}
+
+        {% if error %}
+        <div class="alert alert-error" role="alert">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            <span>{{ error }}</span>
+        </div>
+        {% endif %}
+
+        <form id="upload-form" action="{{ url_for('upload') }}" method="POST" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <label class="dropzone" id="dropzone">
+                <svg class="dz-border" aria-hidden="true"><rect/></svg>
+                <input type="file" name="file" id="file" accept="image/png,image/jpeg" required>
+                <span class="dz-art" aria-hidden="true">
+                    <svg class="dz-ribcage" viewBox="0 0 400 460" aria-hidden="true" focusable="false"><g class="spine"><rect x="193" y="36" width="14" height="21" rx="4" pathLength="1" style="--i:0"/><rect x="193" y="65" width="14" height="21" rx="4" pathLength="1" style="--i:1"/><rect x="193" y="94" width="14" height="21" rx="4" pathLength="1" style="--i:2"/><rect x="193" y="123" width="14" height="21" rx="4" pathLength="1" style="--i:3"/><rect x="193" y="152" width="14" height="21" rx="4" pathLength="1" style="--i:4"/><rect x="193" y="181" width="14" height="21" rx="4" pathLength="1" style="--i:5"/><rect x="193" y="210" width="14" height="21" rx="4" pathLength="1" style="--i:6"/><rect x="193" y="239" width="14" height="21" rx="4" pathLength="1" style="--i:7"/><rect x="193" y="268" width="14" height="21" rx="4" pathLength="1" style="--i:8"/><rect x="193" y="297" width="14" height="21" rx="4" pathLength="1" style="--i:9"/><rect x="193" y="326" width="14" height="21" rx="4" pathLength="1" style="--i:10"/><rect x="193" y="355" width="14" height="21" rx="4" pathLength="1" style="--i:11"/><rect x="193" y="384" width="14" height="21" rx="4" pathLength="1" style="--i:12"/><rect x="193" y="413" width="14" height="21" rx="4" pathLength="1" style="--i:13"/></g><path d="M196 64C160 50 112 52 62 72" pathLength="1" style="--i:2"/><path d="M204 64C240 50 288 52 338 72" pathLength="1" style="--i:3"/><path d="M194 92C170.0 78 130.0 82 125.0 106C122.0 122 130.0 132 141.0 134" pathLength="1" style="--i:4"/><path d="M206 92C230.0 78 270.0 82 275.0 106C278.0 122 270.0 132 259.0 134" pathLength="1" style="--i:5"/><path d="M194 122C159.2 108 104.8 112 98.0 136C93.9 152 104.8 162 119.8 164" pathLength="1" style="--i:6"/><path d="M206 122C240.8 108 295.2 112 302.0 136C306.1 152 295.2 162 280.2 164" pathLength="1" style="--i:7"/><path d="M194 152C152.0 138 88.0 142 80.0 166C75.2 182 88.0 192 105.6 194" pathLength="1" style="--i:8"/><path d="M206 152C248.0 138 312.0 142 320.0 166C324.8 182 312.0 192 294.4 194" pathLength="1" style="--i:9"/><path d="M194 182C146.0 168 74.0 172 65.0 196C59.6 212 74.0 222 93.8 224" pathLength="1" style="--i:10"/><path d="M206 182C254.0 168 326.0 172 335.0 196C340.4 212 326.0 222 306.2 224" pathLength="1" style="--i:11"/><path d="M194 212C142.4 198 65.6 202 56.0 226C50.2 242 65.6 252 86.7 254" pathLength="1" style="--i:12"/><path d="M206 212C257.6 198 334.4 202 344.0 226C349.8 242 334.4 252 313.3 254" pathLength="1" style="--i:13"/><path d="M194 242C140 228 60 232 50 256C44 272 60 282 82 284" pathLength="1" style="--i:14"/><path d="M206 242C260 228 340 232 350 256C356 272 340 282 318 284" pathLength="1" style="--i:15"/><path d="M194 272C140 258 60 262 50 286C44 302 60 312 82 314" pathLength="1" style="--i:16"/><path d="M206 272C260 258 340 262 350 286C356 302 340 312 318 314" pathLength="1" style="--i:17"/><path d="M194 302C141.8 288 64.2 292 54.5 316C48.7 332 64.2 342 85.5 344" pathLength="1" style="--i:18"/><path d="M206 302C258.2 288 335.8 292 345.5 316C351.3 332 335.8 342 314.5 344" pathLength="1" style="--i:19"/><path d="M194 332C146.0 318 74.0 322 65.0 346C59.6 362 74.0 372 93.8 374" pathLength="1" style="--i:20"/><path d="M206 332C254.0 318 326.0 322 335.0 346C340.4 362 326.0 372 306.2 374" pathLength="1" style="--i:21"/><path d="M194 362C153.2 348 90.8 352 83.0 376C78.3 392 90.8 402 108.0 404" pathLength="1" style="--i:22"/><path d="M206 362C246.8 348 309.2 352 317.0 376C321.7 392 309.2 402 292.0 404" pathLength="1" style="--i:23"/></svg>
+                    <span class="dz-badge">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg>
+                    </span>
+                </span>
+                <span class="dropzone-title">Drop a chest X-ray here, or <span>browse</span></span>
+                <span class="dropzone-hint">PNG or JPEG up to 10 MB · or paste with <span class="kbd">Ctrl</span> + <span class="kbd">V</span></span>
+            </label>
+
+            <div class="selected" aria-live="polite">
+                <div class="selected-stage"><img id="preview-img" alt="Selected X-ray preview"></div>
+                <div class="selected-meta">
+                    <span class="file-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>
+                    </span>
+                    <div class="info">
+                        <div class="selected-name" id="preview-name"></div>
+                        <div class="selected-detail" id="preview-detail"></div>
+                    </div>
+                    <button type="button" class="btn btn-ghost btn-sm" id="replace-file">Replace</button>
+                    <button type="button" class="icon-btn" id="clear-file" aria-label="Remove selected file" title="Remove">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                    </button>
+                </div>
+            </div>
+
+            <div class="upload-actions">
+                <button type="submit" class="btn btn-primary btn-lg btn-block" id="submit-btn" disabled>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 12h10"/></svg>
+                    <span id="submit-label">Analyze X-ray</span>
+                </button>
+            </div>
+        </form>
+        <p class="fine-print">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
+            Processed on this server only, never used for training.
+        </p>
+    </div>
+</section>
+
+<section class="section" id="recent-section" hidden>
+    <div class="section-head" data-reveal>
+        <div>
+            <h2>Recent analyses</h2>
+            <p>Saved in this browser only. Results expire {{ retention_minutes }} minutes after upload.</p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="clear-recent">Clear list</button>
+    </div>
+    <div class="recent" id="recent-list"></div>
+</section>
+
+<section class="section">
+    <div class="section-head" data-reveal>
+        <div>
+            <h2>How it works</h2>
+            <p>Three stages, about 10–40 seconds in total.</p>
+        </div>
+    </div>
+    <ol class="steps">
+        <li class="card step" data-reveal style="--d:0">
+            <span class="step-num">01</span>
+            <span class="step-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>
+            </span>
+            <h3>Classify</h3>
+            <p>An EfficientNetB0 network trained on 5,856 labelled chest X-rays estimates the probability of pneumonia.</p>
+        </li>
+        <li class="card step" data-reveal style="--d:1">
+            <span class="step-num">02</span>
+            <span class="step-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+            </span>
+            <h3>Explain</h3>
+            <p>Grad-CAM highlights the lung regions that most influenced the decision, so the result can be checked.</p>
+        </li>
+        <li class="card step" data-reveal style="--d:2">
+            <span class="step-num">03</span>
+            <span class="step-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h8M8 9h2"/></svg>
+            </span>
+            <h3>Report</h3>
+            <p>A structured screening note is drafted for clinician review and bundled with the images as a PDF.</p>
+        </li>
+    </ol>
+</section>
+
+<div class="drop-overlay" id="drop-overlay" aria-hidden="true"><div>Drop to analyze</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const MAX_BYTES = 10 * 1024 * 1024;
+    const TYPES = ['image/png', 'image/jpeg'];
+    const card = document.getElementById('upload-card');
+    const form = document.getElementById('upload-form');
+    const input = document.getElementById('file');
+    const dropzone = document.getElementById('dropzone');
+    const submit = document.getElementById('submit-btn');
+    const submitLabel = document.getElementById('submit-label');
+    const detail = document.getElementById('preview-detail');
+    const img = document.getElementById('preview-img');
+    let objectUrl;
+
+    function formatSize(bytes) {
+        return bytes < 1024 * 1024 ? Math.round(bytes / 1024) + ' KB' : (bytes / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    function showFile(file) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        if (!file) {
+            card.classList.remove('has-file');
+            submit.disabled = true;
+            return;
+        }
+        const error = !TYPES.includes(file.type) ? 'Unsupported type. Use a PNG or JPEG image.'
+            : file.size > MAX_BYTES ? 'Too large. The limit is 10 MB.' : null;
+        document.getElementById('preview-name').textContent = file.name;
+        detail.textContent = error || formatSize(file.size);
+        detail.classList.toggle('is-error', !!error);
+        objectUrl = URL.createObjectURL(file);
+        img.onload = () => { if (!error) detail.textContent = formatSize(file.size) + ' · ' + img.naturalWidth + ' × ' + img.naturalHeight + ' px'; };
+        img.src = objectUrl;
+        card.classList.add('has-file');
+        submit.disabled = !!error;
+    }
+
+    function useFiles(files) {
+        if (!files || !files.length) return;
+        const dt = new DataTransfer();
+        dt.items.add(files[0]);
+        input.files = dt.files;
+        showFile(files[0]);
+    }
+
+    input.addEventListener('change', () => showFile(input.files[0]));
+    document.getElementById('replace-file').addEventListener('click', () => input.click());
+    document.getElementById('clear-file').addEventListener('click', () => { input.value = ''; showFile(null); });
+
+    // Drop anywhere on the page
+    const overlay = document.getElementById('drop-overlay');
+    let depth = 0;
+    const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+    window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; depth++; overlay.classList.add('is-visible'); dropzone.classList.add('is-dragover'); });
+    window.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; overlay.classList.remove('is-visible'); dropzone.classList.remove('is-dragover'); } });
+    window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+    window.addEventListener('drop', e => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        depth = 0;
+        overlay.classList.remove('is-visible');
+        dropzone.classList.remove('is-dragover');
+        useFiles(e.dataTransfer.files);
+    });
+
+    // Paste an image from the clipboard
+    window.addEventListener('paste', e => {
+        const files = Array.from(e.clipboardData ? e.clipboardData.files : []).filter(f => f.type.startsWith('image/'));
+        if (files.length) { useFiles(files); window.showToast('Image pasted from clipboard'); }
+    });
+
+    form.addEventListener('submit', () => {
+        submit.disabled = true;
+        submitLabel.textContent = 'Uploading…';
+    });
+
+    // Restore the form if the user navigates back to this page
+    window.addEventListener('pageshow', () => {
+        submitLabel.textContent = 'Analyze X-ray';
+        showFile(input.files[0]);
+    });
+
+    // Recent analyses (stored only in this browser)
+    const RETENTION_MS = {{ retention_minutes }} * 60 * 1000;
+    const viewUrl = id => {{ url_for('view_run', run_id='RUN_ID') | tojson }}.replace('RUN_ID', id);
+    const thumbUrl = id => {{ url_for('run_file', run_id='RUN_ID', kind='original') | tojson }}.replace('RUN_ID', id);
+
+    function loadRecent() {
+        try { return JSON.parse(localStorage.getItem('recentAnalyses') || '[]'); } catch (e) { return []; }
+    }
+
+    function timeAgo(ms) {
+        const minutes = Math.round((Date.now() - ms) / 60000);
+        return minutes < 1 ? 'just now' : minutes < 60 ? minutes + ' min ago' : Math.round(minutes / 60) + ' h ago';
+    }
+
+    function renderRecent() {
+        const items = loadRecent().filter(r => Date.now() - r.at < RETENTION_MS);
+        try { localStorage.setItem('recentAnalyses', JSON.stringify(items)); } catch (e) {}
+        const list = document.getElementById('recent-list');
+        list.replaceChildren();
+        items.forEach((r, i) => {
+            const a = document.createElement('a');
+            a.className = 'card recent-item';
+            a.dataset.reveal = '';
+            a.style.setProperty('--d', i);
+            a.href = viewUrl(r.id);
+            const thumb = document.createElement('img');
+            thumb.src = thumbUrl(r.id);
+            thumb.alt = '';
+            thumb.loading = 'lazy';
+            thumb.onerror = () => a.remove();
+            const text = document.createElement('div');
+            const title = document.createElement('strong');
+            const dot = document.createElement('span');
+            dot.className = 'status-dot ' + (r.positive ? 'is-positive' : 'is-negative');
+            title.append(dot, r.positive ? 'Pneumonia detected' : 'No pneumonia');
+            const meta = document.createElement('span');
+            meta.className = 'meta';
+            meta.textContent = Math.round(r.confidence * 100) + '% confidence · ' + timeAgo(r.at);
+            text.append(title, meta);
+            a.append(thumb, text);
+            list.append(a);
+        });
+        document.getElementById('recent-section').hidden = items.length === 0;
+        window.revealAll(document.getElementById('recent-section'));
+    }
+
+    document.getElementById('clear-recent').addEventListener('click', () => {
+        try { localStorage.removeItem('recentAnalyses'); } catch (e) {}
+        renderRecent();
+    });
+    renderRecent();
+})();
+</script>
+{% endblock %}
