@@ -1,4 +1,6 @@
 .venv/
-x-ray-classification.h5
+venv/
 .env
 uploads/
+__pycache__/
+.pytest_cache/

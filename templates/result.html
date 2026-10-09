@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Pneumonia detected' if result.is_pneumonia else 'No pneumonia detected' }} · Chest X-Ray Analysis{% endblock %}
+
+{% block header_actions %}
+<a class="btn btn-secondary btn-sm" href="{{ url_for('index') }}" aria-label="New analysis">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    <span class="btn-label">New analysis</span>
+</a>
+{% endblock %}
+
+{% block content %}
+{% set positive = result.is_pneumonia %}
+{% set borderline = (result.probability - result.threshold) | abs < 0.15 %}
+{% set circumference = 326.73 %}
+
+<div class="result-head rise">
+    <div>
+        <h1>Analysis result</h1>
+        <div class="result-meta">
+            <span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                <time id="created-at" data-ts="{{ result.get('created_at') or '' }}">Just now</time>
+            </span>
+            <span class="mono">#{{ run_id[:8] }}</span>
+            <span id="expires-in"></span>
+        </div>
+    </div>
+    <div class="result-actions">
+        <button type="button" class="btn btn-ghost btn-danger" id="delete-open">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+            Delete
+        </button>
+        <button type="button" class="btn btn-secondary" id="copy-link">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+            Copy link
+        </button>
+        <a class="btn btn-primary" href="{{ url_for('run_file', run_id=run_id, kind='pdf') }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+            Download PDF
+        </a>
+    </div>
+</div>
+
+<div class="result-grid">
+    <!-- Image viewer -->
+    <section class="viewer sticky rise rise-1" id="viewer" aria-label="X-ray viewer">
+        <div class="viewer-toolbar">
+            <div class="segmented" role="group" aria-label="View mode">
+                <span class="segmented-indicator" aria-hidden="true"></span>
+                <button type="button" data-mode="original" data-opacity="0" aria-pressed="false" title="Original (1)">Original</button>
+                <button type="button" data-mode="heatmap" data-opacity="1" aria-pressed="true" title="Heatmap (2)">Heatmap</button>
+                <button type="button" data-mode="blend" data-opacity="0.5" aria-pressed="false" title="Blend (3)">Blend</button>
+                <button type="button" data-mode="compare" aria-pressed="false" title="Compare side by side (4)">Compare</button>
+            </div>
+            <div class="viewer-tools">
+                <button type="button" class="icon-btn" id="zoom-out" aria-label="Zoom out" title="Zoom out (−)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg>
+                </button>
+                <span class="zoom-level" id="zoom-level">100%</span>
+                <button type="button" class="icon-btn" id="zoom-in" aria-label="Zoom in" title="Zoom in (+)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+                <button type="button" class="icon-btn" id="zoom-reset" aria-label="Reset view" title="Reset view (0)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+                </button>
+                <button type="button" class="icon-btn" id="fullscreen" aria-label="Fullscreen" title="Fullscreen (F)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="stage" id="stage">
+            <div class="stage-content" id="stage-content">
+                <img class="layer-base" src="{{ url_for('run_file', run_id=run_id, kind='original') }}" alt="Uploaded chest X-ray" draggable="false">
+                <img class="layer-cam" id="cam-layer" src="{{ url_for('run_file', run_id=run_id, kind='grad-cam') }}" alt="Grad-CAM heatmap overlay" draggable="false">
+            </div>
+            <span class="stage-label left">Original</span>
+            <span class="stage-label right">Grad-CAM</span>
+            <div class="compare-handle" id="compare-handle" role="slider" tabindex="0" aria-label="Comparison divider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"></div>
+            <span class="stage-hint" id="stage-hint">Scroll to zoom · drag to pan · double-click to reset</span>
+        </div>
+
+        <div class="viewer-footer">
+            <div class="viewer-row">
+                <label for="cam-opacity">Heatmap</label>
+                <input type="range" id="cam-opacity" min="0" max="100" value="100">
+                <span class="value" id="opacity-value">100%</span>
+            </div>
+            <div class="viewer-row">
+                <span class="row-label">Influence</span>
+                <span>Low</span><span class="legend-bar" aria-hidden="true"></span><span>High</span>
+            </div>
+            <p class="viewer-note">
+                {% if result.attention_region %}Model attention concentrated in the <strong>{{ result.attention_region }}</strong>.{% else %}The model showed no distinct focus area.{% endif %}
+                The heatmap shows where the model looked{{ ' for signs of pneumonia' if positive else ' when concluding the X-ray is normal' }}. It is not an outline of a lesion.
+            </p>
+        </div>
+    </section>
+
+    <!-- Findings -->
+    <div class="stack">
+        <section class="card verdict rise rise-2" aria-labelledby="verdict-title">
+            <div class="verdict-top">
+                <div class="ring" role="img" aria-label="Confidence {{ '%.0f' % (result.confidence * 100) }} percent">
+                    <svg viewBox="0 0 120 120" aria-hidden="true">
+                        <circle class="track" cx="60" cy="60" r="52" fill="none" stroke-width="10"/>
+                        <circle class="value" id="ring-value" cx="60" cy="60" r="52" fill="none" stroke-width="10"
+                                stroke-dasharray="{{ circumference }}" stroke-dashoffset="{{ circumference }}"
+                                data-offset="{{ '%.2f' % (circumference * (1 - result.confidence)) }}"/>
+                    </svg>
+                    <div class="ring-label">
+                        <strong class="num" data-count="{{ result.confidence }}" data-scale="100" data-suffix="%">{{ '%.0f' % (result.confidence * 100) }}%</strong>
+                        <span>Confidence</span>
+                    </div>
+                </div>
+                <div>
+                    <div class="verdict-kicker"><span class="status-dot {{ 'is-positive' if positive else 'is-negative' }}" aria-hidden="true"></span>Model finding</div>
+                    <h2 class="verdict-title" id="verdict-title">{{ 'Pneumonia detected' if positive else 'No pneumonia detected' }}</h2>
+                    <p class="verdict-desc">
+                        {% if positive %}The classifier found patterns consistent with pneumonia. Clinical review is recommended.
+                        {% else %}The classifier did not find patterns typical of pneumonia in this image.{% endif %}
+                    </p>
+                </div>
+            </div>
+
+            {% if borderline %}
+            <div class="alert alert-warning" role="note">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>
+                <span><strong>Borderline result.</strong> The probability is close to the {{ result.threshold }} decision threshold, so treat this finding as inconclusive.</span>
+            </div>
+            {% endif %}
+
+            <div class="metrics">
+                <div class="metric">
+                    <div class="metric-label">Pneumonia probability</div>
+                    <div class="metric-value num" data-count="{{ result.probability }}" data-decimals="3">{{ '%.3f' % result.probability }}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Decision threshold</div>
+                    <div class="metric-value num">{{ result.threshold }}</div>
+                </div>
+                <div class="metric metric-wide">
+                    <div class="metric-label">Grad-CAM focus</div>
+                    <div class="metric-value">{% set region = result.attention_region or 'no distinct focus' %}{{ region[:1] | upper }}{{ region[1:] }}</div>
+                </div>
+            </div>
+
+            <div class="scale" aria-label="Pneumonia probability {{ '%.1f' % (result.probability * 100) }} percent">
+                <div class="scale-head"><span>Normal</span><span>Pneumonia</span></div>
+                <div class="scale-track">
+                    <span class="scale-threshold" style="left: {{ result.threshold * 100 }}%" title="Decision threshold"></span>
+                    <span class="scale-marker" id="scale-marker" style="left: 0%" data-left="{{ '%.2f' % (result.probability * 100) }}"></span>
+                </div>
+                <div class="scale-ticks"><span>0.0</span><span>0.25</span><span>0.5</span><span>0.75</span><span>1.0</span></div>
+            </div>
+        </section>
+
+        <section class="card card-pad rise rise-3">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title">Detailed report</h2>
+                    <div class="card-sub">Drafted by Gemini for clinician review</div>
+                </div>
+                {% if report_html %}
+                <button type="button" class="btn btn-ghost btn-sm" id="copy-report">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy
+                </button>
+                {% endif %}
+            </div>
+            {% if report_html %}
+            <article class="report" id="report">{{ report_html }}</article>
+            {% else %}
+            <div class="alert alert-warning" role="note">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+                <span>The written report could not be generated (check that GEMINI_API_KEY is set). The classification and heatmap are still valid.</span>
+            </div>
+            {% endif %}
+        </section>
+
+        <div class="card footnote">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <p>Produced by an experimental classifier and an AI language model. This is not a medical diagnosis. Chest imaging must be interpreted by a qualified radiologist or physician.</p>
+        </div>
+    </div>
+</div>
+
+<dialog id="delete-dialog" aria-labelledby="delete-title">
+    <h2 id="delete-title">Delete this analysis?</h2>
+    <p>The X-ray, heatmap and PDF report will be permanently removed from the server. This can't be undone.</p>
+    <form method="POST" action="{{ url_for('delete_run', run_id=run_id) }}" class="dialog-actions">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="button" class="btn btn-secondary" id="delete-cancel">Cancel</button>
+        <button type="submit" class="btn btn-danger-solid">Delete my data</button>
+    </form>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const runId = {{ run_id | tojson }};
+    const result = {{ {'positive': result.is_pneumonia, 'confidence': result.confidence, 'probability': result.probability, 'created_at': result.get('created_at')} | tojson }};
+    const retentionMs = {{ retention_minutes }} * 60 * 1000;
+    const createdMs = result.created_at ? result.created_at * 1000 : Date.now();
+
+    // ---------- Header meta ----------
+    document.getElementById('created-at').textContent = new Date(createdMs).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    function updateExpiry() {
+        const minutes = Math.max(0, Math.round((createdMs + retentionMs - Date.now()) / 60000));
+        document.getElementById('expires-in').textContent = 'Auto-deletes in ~' + minutes + ' min';
+    }
+    updateExpiry();
+    setInterval(updateExpiry, 30000);
+
+    // Remember this analysis on the upload page (this browser only)
+    try {
+        const recent = JSON.parse(localStorage.getItem('recentAnalyses') || '[]').filter(r => r.id !== runId);
+        recent.unshift({ id: runId, positive: result.positive, confidence: result.confidence, at: createdMs });
+        localStorage.setItem('recentAnalyses', JSON.stringify(recent.slice(0, 8)));
+    } catch (e) {}
+
+    // ---------- Animate the gauges in ----------
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        const ring = document.getElementById('ring-value');
+        ring.style.strokeDashoffset = ring.dataset.offset;
+        const marker = document.getElementById('scale-marker');
+        marker.style.left = marker.dataset.left + '%';
+    }));
+
+    // ---------- Actions ----------
+    async function copy(text, message) {
+        try { await navigator.clipboard.writeText(text); window.showToast(message); }
+        catch (e) { window.showToast('Copy failed. Select and copy manually.'); }
+    }
+    document.getElementById('copy-link').addEventListener('click', () => copy(location.href, 'Link copied'));
+    const copyReport = document.getElementById('copy-report');
+    if (copyReport) copyReport.addEventListener('click', () => copy(document.getElementById('report').innerText, 'Report copied'));
+
+    const dialog = document.getElementById('delete-dialog');
+    document.getElementById('delete-open').addEventListener('click', () => dialog.showModal());
+    document.getElementById('delete-cancel').addEventListener('click', () => dialog.close());
+
+    // ---------- Viewer ----------
+    const viewer = document.getElementById('viewer');
+    const stage = document.getElementById('stage');
+    const content = document.getElementById('stage-content');
+    const cam = document.getElementById('cam-layer');
+    const handle = document.getElementById('compare-handle');
+    const slider = document.getElementById('cam-opacity');
+    const modeButtons = viewer.querySelectorAll('.segmented button');
+    const hint = document.getElementById('stage-hint');
+
+    let opacity = 1, compare = false, split = 0.5;
+    let scale = 1, tx = 0, ty = 0;
+
+    function renderLayers() {
+        cam.style.opacity = opacity;
+        stage.classList.toggle('is-compare', compare);
+        // The clip is in content coordinates, so convert the on-screen divider through the current zoom
+        const width = stage.clientWidth;
+        const contentSplit = Math.min(1, Math.max(0, (split * width - tx) / (width * scale)));
+        cam.style.clipPath = compare ? `inset(0 0 0 ${contentSplit * 100}%)` : 'none';
+        handle.style.left = (split * 100) + '%';
+        handle.setAttribute('aria-valuenow', Math.round(split * 100));
+        slider.value = Math.round(opacity * 100);
+        document.getElementById('opacity-value').textContent = Math.round(opacity * 100) + '%';
+        modeButtons.forEach(b => {
+            const active = compare ? b.dataset.mode === 'compare'
+                : b.dataset.mode !== 'compare' && Number(b.dataset.opacity) === opacity;
+            b.setAttribute('aria-pressed', String(active));
+        });
+        window.syncSegmented(viewer.querySelector('.segmented'));
+    }
+
+    function setMode(mode) {
+        const button = viewer.querySelector(`[data-mode="${mode}"]`);
+        compare = mode === 'compare';
+        opacity = compare ? 1 : Number(button.dataset.opacity);
+        renderLayers();
+    }
+
+    modeButtons.forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
+    slider.addEventListener('input', () => { opacity = slider.value / 100; renderLayers(); });
+
+    function clampPan() {
+        const w = stage.clientWidth, h = stage.clientHeight;
+        tx = Math.min(0, Math.max(w - w * scale, tx));
+        ty = Math.min(0, Math.max(h - h * scale, ty));
+    }
+
+    function applyTransform() {
+        clampPan();
+        content.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+        document.getElementById('zoom-level').textContent = Math.round(scale * 100) + '%';
+        renderLayers();
+    }
+
+    function zoomAt(factor, cx, cy) {
+        const next = Math.min(8, Math.max(1, scale * factor));
+        tx = cx - (cx - tx) * (next / scale);
+        ty = cy - (cy - ty) * (next / scale);
+        scale = next;
+        applyTransform();
+    }
+
+    function animated(fn) {
+        content.classList.add('is-animating');
+        fn();
+        setTimeout(() => content.classList.remove('is-animating'), 360);
+    }
+    function zoomCenter(factor) { animated(() => zoomAt(factor, stage.clientWidth / 2, stage.clientHeight / 2)); }
+    function resetView() { animated(() => { scale = 1; tx = 0; ty = 0; applyTransform(); }); }
+    function dismissHint() { hint.style.opacity = 0; }
+
+    stage.addEventListener('wheel', e => {
+        e.preventDefault();
+        dismissHint();
+        const rect = stage.getBoundingClientRect();
+        zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - rect.left, e.clientY - rect.top);
+    }, { passive: false });
+
+    let drag = null;
+    stage.addEventListener('pointerdown', e => {
+        dismissHint();
+        const rect = stage.getBoundingClientRect();
+        drag = { type: e.target === handle ? 'split' : 'pan', x: e.clientX, y: e.clientY, tx, ty, rect };
+        stage.setPointerCapture(e.pointerId);
+        if (drag.type === 'pan') stage.classList.add('is-panning');
+    });
+    stage.addEventListener('pointermove', e => {
+        if (!drag) return;
+        if (drag.type === 'split') {
+            split = Math.min(1, Math.max(0, (e.clientX - drag.rect.left) / drag.rect.width));
+            renderLayers();
+        } else {
+            tx = drag.tx + (e.clientX - drag.x);
+            ty = drag.ty + (e.clientY - drag.y);
+            applyTransform();
+        }
+    });
+    const endDrag = () => { drag = null; stage.classList.remove('is-panning'); };
+    stage.addEventListener('pointerup', endDrag);
+    stage.addEventListener('pointercancel', endDrag);
+    stage.addEventListener('dblclick', resetView);
+
+    handle.addEventListener('keydown', e => {
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            e.preventDefault();
+            e.stopPropagation();
+            split = Math.min(1, Math.max(0, split + (e.key === 'ArrowLeft' ? -0.05 : 0.05)));
+            renderLayers();
+        }
+    });
+
+    document.getElementById('zoom-in').addEventListener('click', () => zoomCenter(1.25));
+    document.getElementById('zoom-out').addEventListener('click', () => zoomCenter(1 / 1.25));
+    document.getElementById('zoom-reset').addEventListener('click', resetView);
+
+    function toggleFullscreen() {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else if (viewer.requestFullscreen) viewer.requestFullscreen();
+    }
+    document.getElementById('fullscreen').addEventListener('click', toggleFullscreen);
+    document.addEventListener('fullscreenchange', () => requestAnimationFrame(applyTransform));
+    window.addEventListener('resize', applyTransform);
+
+    // Keyboard shortcuts (ignored while typing or when a dialog is open)
+    document.addEventListener('keydown', e => {
+        if (e.target.closest('input, textarea') || dialog.open || e.metaKey || e.ctrlKey || e.altKey) return;
+        const modes = { '1': 'original', '2': 'heatmap', '3': 'blend', '4': 'compare' };
+        if (modes[e.key]) setMode(modes[e.key]);
+        else if (e.key === '+' || e.key === '=') zoomCenter(1.25);
+        else if (e.key === '-') zoomCenter(1 / 1.25);
+        else if (e.key === '0') resetView();
+        else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    });
+
+    // Report sections fade in one after another
+    const reportEl = document.getElementById('report');
+    if (reportEl) {
+        Array.from(reportEl.children).forEach((child, i) => {
+            child.dataset.reveal = '';
+            child.style.setProperty('--d', Math.min(i, 12));
+        });
+        window.revealAll(reportEl);
+    }
+
+    renderLayers();
+    document.fonts && document.fonts.ready.then(renderLayers);
+})();
+</script>
+{% endblock %}

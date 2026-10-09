@@ -1,208 +1,271 @@
+"""Web app: upload a chest X-ray, get a pneumonia prediction, Grad-CAM heatmap and a PDF report."""
+import json
+import logging
 import os
-from flask import Flask, render_template, request, redirect, url_for, send_file
-from werkzeug.utils import secure_filename
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-import matplotlib.pyplot as plt
-from fpdf import FPDF
-import google.generativeai as genai
+import secrets
+import shutil
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load .env before importing modules that read configuration at import time
 load_dotenv()
 
-# Flask App Configuration
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for  # noqa: E402
+from flask_limiter import Limiter  # noqa: E402
+from flask_limiter.util import get_remote_address  # noqa: E402
+from flask_wtf.csrf import CSRFError, CSRFProtect  # noqa: E402
+from markupsafe import Markup  # noqa: E402
+from PIL import Image, UnidentifiedImageError  # noqa: E402
+from werkzeug.exceptions import RequestEntityTooLarge  # noqa: E402
+
+import analysis  # noqa: E402
+import report  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+log = logging.getLogger(__name__)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config.update(
+    SECRET_KEY=os.environ.get('SECRET_KEY') or secrets.token_hex(32),
+    UPLOAD_FOLDER=os.path.abspath(os.environ.get('UPLOAD_FOLDER', os.path.join(BASE_DIR, 'uploads'))),
+    MAX_CONTENT_LENGTH=10 * 1024 * 1024,  # 10 MB
+    RETENTION_MINUTES=int(os.environ.get('RETENTION_MINUTES', '60')),
+    RATELIMIT_STORAGE_URI=os.environ.get('RATELIMIT_STORAGE_URI', 'memory://'),
+)
+if not os.environ.get('SECRET_KEY'):
+    log.warning("SECRET_KEY is not set; using a random key (forms break across restarts and workers)")
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Load pre-trained X-ray classification model
-model = tf.keras.models.load_model('x-ray-classification.h5')
+csrf = CSRFProtect(app)
+limiter = Limiter(get_remote_address, app=app)
+executor = ThreadPoolExecutor(max_workers=int(os.environ.get('ANALYSIS_WORKERS', '2')))
 
-# Configure Gemini API with API Key from environment
-genai.configure(api_key=os.environ['API_KEY'])
+# Fail fast with setup instructions if the model is missing; requests show the same message
+try:
+    analysis.get_model()
+except analysis.ModelNotAvailable as e:
+    log.error("%s", e)
 
-class GradCAM:
-    def __init__(self, model, class_idx):
-        self.model = model
-        self.class_idx = class_idx
-        self.last_conv_layer = self._find_last_conv_layer()
-
-    def _find_last_conv_layer(self):
-        for layer in reversed(self.model.layers):
-            if 'conv' in layer.name.lower():
-                return layer.name
-        raise ValueError("Could not find a convolutional layer")
-
-    def compute_heatmap(self, img_array):
-        grad_model = tf.keras.models.Model(
-            [self.model.inputs],
-            [self.model.get_layer(self.last_conv_layer).output, self.model.output]
-        )
-
-        with tf.GradientTape() as tape:
-            conv_output, predictions = grad_model(img_array)
-            loss = predictions[:, self.class_idx]
-
-        grads = tape.gradient(loss, conv_output)
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-        
-        conv_output = conv_output[0]
-        heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_output), axis=-1)
-        heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
-        
-        return heatmap.numpy()
-
-def create_pdf_report(prediction, grad_cam_path, detailed_report):
-    from fpdf import FPDF
-    
-    class PDF(FPDF):
-        def __init__(self):
-            super().__init__()
-            self.add_font('DejaVu', '', 'DejaVuSansCondensed.ttf', uni=True)
-    
-    pdf = PDF()
-    pdf.add_page()
-    pdf.set_font("DejaVu", size=12)
-
-    pdf.cell(200, 10, txt="Pneumonia Diagnosis Report", ln=True, align='C')
-    pdf.cell(200, 10, txt=f"Diagnosis: {'Pneumonia Detected' if prediction > 0.5 else 'No Pneumonia'}", ln=True)
-    
-    # Access the prediction value from the numpy array
-    prediction_value = prediction[0] if isinstance(prediction, np.ndarray) else prediction
-    pdf.cell(200, 10, txt=f"Prediction Confidence: {prediction_value:.2f}", ln=True)
-
-    # Skip Grad-CAM visualization if not generated
-    if grad_cam_path:  # Only add Grad-CAM if it exists
-        pdf.cell(200, 10, txt="Grad-CAM Visualization:", ln=True)
-        pdf.image(grad_cam_path, x=10, y=None, w=190)
-
-    pdf.cell(200, 10, txt="Detailed Diagnosis Report:", ln=True)
-    
-    # Clean and encode the detailed report
-    detailed_report = detailed_report.encode('ascii', 'replace').decode('ascii')
-    pdf.multi_cell(0, 10, detailed_report)
-
-    pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], "diagnosis_report.pdf")
-    pdf.output(pdf_path)
-    return pdf_path
+STEPS = ['queued', 'analyzing', 'reporting', 'pdf', 'done']
+STEP_LABELS = {
+    'queued': 'Waiting in queue',
+    'analyzing': 'Classifying and computing Grad-CAM',
+    'reporting': 'Drafting the written report',
+    'pdf': 'Building the PDF',
+}
 
 
+@app.context_processor
+def template_globals():
+    return {'retention_minutes': app.config['RETENTION_MINUTES']}
 
-def generate_detailed_report(prediction, additional_info):
+
+# ---------- Run storage (one folder per analysis) ----------
+
+def run_dir(run_id):
     try:
-        # If prediction is a numpy array, extract its value
-        if isinstance(prediction, np.ndarray):
-            prediction_value = prediction[0]  # Assuming prediction is a 1D array with one element
-        else:
-            prediction_value = prediction
+        if uuid.UUID(hex=run_id).hex != run_id:
+            abort(404)
+    except ValueError:
+        abort(404)
+    path = os.path.join(app.config['UPLOAD_FOLDER'], run_id)
+    if not os.path.isdir(path):
+        abort(404)
+    return path
 
-        # Initialize the GenerativeModel with the model name
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        # Construct the prompt
-        prompt = f"""
-        A patient has undergone a chest X-ray analysis.
-        Diagnosis: {'Pneumonia Detected' if prediction_value > 0.5 else 'No Pneumonia'}.
-        Prediction Confidence: {prediction_value:.2f}.
-        Additional Analysis Information: {additional_info}.
-        Please generate a detailed medical report with recommendations and insights based on this data.
-        """
-        
-        # Generate the content using the model
-        response = model.generate_content(prompt)
-        
-        # Return the generated report text
-        return response.text
-    except Exception as e:
-        # Return error message if there's an issue
-        return f"Error generating report: {str(e)}"
 
-def generate_grad_cam(model, image_path):
-    # Load and preprocess the image
-    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
-    img_array = tf.keras.preprocessing.image.img_to_array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    
-    # Get prediction
-    prediction = model.predict(img_array)[0]
-    
-    # Initialize GradCAM with the model and class index (0 for binary classification)
-    grad_cam = GradCAM(model, class_idx=0)
-    
-    # Generate heatmap
-    heatmap = grad_cam.compute_heatmap(img_array)
-    
-    # Load the original image for overlay
-    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
-    img = tf.keras.preprocessing.image.img_to_array(img)
-    
-    # Resize heatmap to match image size
-    heatmap = np.uint8(255 * heatmap)
-    heatmap = tf.image.resize(
-        tf.expand_dims(heatmap, -1),
-        (img.shape[0], img.shape[1])
-    ).numpy()
-    
-    # Apply colormap to heatmap
-    heatmap = np.squeeze(heatmap)
-    colormap = plt.cm.jet(heatmap)[:, :, :3]
-    colormap = np.uint8(255 * colormap)
-    
-    # Overlay heatmap on original image
-    overlay = colormap * 0.4 + img * 0.6
-    overlay = np.clip(overlay, 0, 255).astype(np.uint8)
-    
-    # Save the visualization
-    grad_cam_path = os.path.join(app.config['UPLOAD_FOLDER'], 'grad_cam.png')
-    plt.imsave(grad_cam_path, overlay / 255)
-    plt.close()
-    
-    return grad_cam_path, prediction
+def write_json(path, data):
+    tmp = f"{path}.tmp"
+    with open(tmp, 'w') as f:
+        json.dump(data, f)
+    os.replace(tmp, path)  # atomic, so the status endpoint never reads a half-written file
 
-# Flask Routes
-@app.route('/', methods=['GET', 'POST'])
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def set_status(directory, state, error=None):
+    write_json(os.path.join(directory, 'status.json'), {'state': state, 'error': error})
+
+
+def find_original(directory):
+    for ext in ALLOWED_EXTENSIONS:
+        path = os.path.join(directory, f'original.{ext}')
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def cleanup_old_runs():
+    """Delete uploaded X-rays and reports older than RETENTION_MINUTES."""
+    cutoff = time.time() - app.config['RETENTION_MINUTES'] * 60
+    root = app.config['UPLOAD_FOLDER']
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def process_run(directory):
+    """Background job: classify, explain, write the report and build the PDF."""
+    try:
+        set_status(directory, 'analyzing')
+        original = find_original(directory)
+        gradcam = os.path.join(directory, 'grad_cam.png')
+        result = analysis.analyze(original, gradcam)
+
+        set_status(directory, 'reporting')
+        report_text = report.generate_report(result)
+
+        set_status(directory, 'pdf')
+        report.build_pdf(result, report_text, original, gradcam, os.path.join(directory, 'diagnosis_report.pdf'))
+
+        write_json(os.path.join(directory, 'result.json'),
+                   {**result, 'report': report_text, 'created_at': time.time()})
+        set_status(directory, 'done')
+    except Exception:
+        log.exception("Analysis failed for %s", directory)
+        set_status(directory, 'error', "The analysis failed. Please try again with a different image.")
+
+
+# ---------- Routes ----------
+
+def render_index(error=None, status=200):
+    model_error = None
+    try:
+        analysis.get_model()
+    except analysis.ModelNotAvailable as e:
+        model_error = str(e)
+    return render_template('index.html', error=error, model_error=model_error), status
+
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def file_too_large(e):
+    return render_index("File is too large. The maximum size is 10 MB.", 413)
+
+
+@app.errorhandler(429)
+def rate_limited(e):
+    return render_index("Too many uploads. Please wait a minute and try again.", 429)
+
+
+@app.errorhandler(CSRFError)
+def csrf_failed(e):
+    return render_index("Your session expired. Please reload the page and try again.", 400)
+
+
+@app.route('/', methods=['GET'])
 def index():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            return "No file uploaded", 400
-        file = request.files['file']
-        if file.filename == '':
-            return "No selected file", 400
-
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
-        file.save(file_path)
-
-        # Generate Grad-CAM and get prediction
-        grad_cam_path, prediction = generate_grad_cam(model, file_path)
-
-        additional_info = "Analysis includes Grad-CAM visualization highlighting areas of interest in the X-ray."
-        detailed_report = generate_detailed_report(prediction, additional_info)
-        
-        pdf_path = create_pdf_report(prediction, grad_cam_path, detailed_report)
-
-        return redirect(url_for('download_pdf', filename="diagnosis_report.pdf"))
-
-    return render_template('index.html')
-
-@app.route('/download/<filename>')
-def download_pdf(filename):
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if not os.path.exists(file_path):
-        return "File not found", 404
-    return send_file(file_path, as_attachment=True)
-
-@app.route('/grad-cam/<filename>')
-def grad_cam(filename):
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if not os.path.exists(file_path):
-        return "File not found", 404
-    return send_file(file_path, as_attachment=True)
+    return render_index()
 
 
-# Run the app
+@app.route('/', methods=['POST'])
+@limiter.limit(os.environ.get('UPLOAD_RATE_LIMIT', '10 per minute'))
+def upload():
+    cleanup_old_runs()
+    try:
+        analysis.get_model()
+    except analysis.ModelNotAvailable:
+        return render_index("The model is not installed on this server.", 503)
+
+    file = request.files.get('file')
+    if file is None or file.filename == '':
+        return render_index("Please choose a chest X-ray image to upload.", 400)
+    if not allowed_file(file.filename):
+        return render_index("Unsupported file type. Upload a PNG or JPEG image.", 400)
+
+    # Each analysis gets its own folder so concurrent users never see each other's files
+    run_id = uuid.uuid4().hex
+    directory = os.path.join(app.config['UPLOAD_FOLDER'], run_id)
+    os.makedirs(directory)
+    ext = file.filename.rsplit('.', 1)[1].lower()
+    path = os.path.join(directory, f'original.{ext}')
+    file.save(path)
+
+    try:
+        with Image.open(path) as img:
+            img.verify()
+    except (UnidentifiedImageError, OSError):
+        shutil.rmtree(directory, ignore_errors=True)
+        return render_index("Could not read that file as an image. Please upload a valid chest X-ray.", 400)
+
+    set_status(directory, 'queued')
+    executor.submit(process_run, directory)
+    return redirect(url_for('view_run', run_id=run_id))
+
+
+@app.route('/analysis/<run_id>')
+def view_run(run_id):
+    directory = run_dir(run_id)
+    status = read_json(os.path.join(directory, 'status.json')) or {'state': 'queued'}
+    if status['state'] == 'error':
+        return render_index(status['error'], 500)
+    if status['state'] != 'done':
+        return render_template('processing.html', run_id=run_id, steps=STEPS, labels=STEP_LABELS,
+                               state=status['state'])
+
+    result = read_json(os.path.join(directory, 'result.json'))
+    return render_template(
+        'result.html',
+        run_id=run_id,
+        result=result,
+        report_html=Markup(report.markdown_to_html(result['report'])) if result['report'] else None,
+    )
+
+
+@app.route('/api/analysis/<run_id>/status')
+def run_status(run_id):
+    status = read_json(os.path.join(run_dir(run_id), 'status.json')) or {'state': 'queued', 'error': None}
+    return jsonify(status)
+
+
+@app.route('/analysis/<run_id>/delete', methods=['POST'])
+def delete_run(run_id):
+    shutil.rmtree(run_dir(run_id), ignore_errors=True)
+    return redirect(url_for('index'))
+
+
+REPORT_FILES = {
+    'grad-cam': ('grad_cam.png', False),
+    'pdf': ('diagnosis_report.pdf', True),
+}
+
+
+@app.route('/analysis/<run_id>/<kind>')
+def run_file(run_id, kind):
+    directory = run_dir(run_id)
+    if kind == 'original':
+        path, as_attachment = find_original(directory), False
+    elif kind in REPORT_FILES:
+        filename, as_attachment = REPORT_FILES[kind]
+        path = os.path.join(directory, filename)
+    else:
+        abort(404)
+    if not path or not os.path.exists(path):
+        abort(404)
+    response = send_file(path, as_attachment=as_attachment)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
 if __name__ == '__main__':
-
-    app.run(debug=True)
-
+    app.run(
+        host=os.environ.get('HOST', '127.0.0.1'),
+        port=int(os.environ.get('PORT', '5000')),
+        debug=os.environ.get('FLASK_DEBUG') == '1',
+    )
